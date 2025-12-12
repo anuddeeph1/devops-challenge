@@ -10,6 +10,18 @@ on:
       - '.github/workflows/**'
   pull_request:
     branches: [main]
+  workflow_dispatch:  # Manual trigger button
+    inputs:
+      deploy_to_eks:
+        description: 'Deploy to EKS after build'
+        required: false
+        type: boolean
+        default: true
+      image_tag:
+        description: 'Custom image tag (leave empty for auto)'
+        required: false
+        type: string
+        default: ''
 
 env:
   APP_NAME: simpletimeservice
