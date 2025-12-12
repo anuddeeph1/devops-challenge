@@ -443,10 +443,16 @@ jobs:
     steps:
     - name: Deployment Status
       run: |
-        if [ "${{ needs.deploy-to-eks.result }}" == "success" ]; then
+        DEPLOY_RESULT="${{ needs.deploy-to-eks.result }}"
+        
+        if [ "$DEPLOY_RESULT" == "success" ]; then
           echo "✅ Deployment successful!"
+        elif [ "$DEPLOY_RESULT" == "skipped" ]; then
+          echo "⏭️  Deployment skipped (add AWS secrets to enable)"
+        elif [ "$DEPLOY_RESULT" == "" ]; then
+          echo "ℹ️  Deployment not attempted"
         else
-          echo "❌ Deployment failed!"
+          echo "❌ Deployment failed: $DEPLOY_RESULT"
           exit 1
         fi
 
