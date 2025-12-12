@@ -703,11 +703,7 @@ AWS_REGION             # AWS region (us-east-1)
 
 This project is licensed under the MIT License.
 
-## 📧 Contact
-
-For questions or feedback, contact: careers@particle41.com
-
 ---
 
-**Built with ❤️ for the Particle41 DevOps Team Challenge** 🚀
+**Built with ❤️ for the DevOps Team Challenge** 🚀
 
