@@ -278,11 +278,14 @@ jobs:
           ${{ env.DOCKER_IMAGE }}:latest-${{ github.run_id }}-${{ github.run_number }}
 
   # Job 5: Update Kubernetes Manifests
+  # DISABLED: GitHub Actions doesn't have push permission by default
+  # To enable: Go to Settings → Actions → General → Workflow permissions → Read and write permissions
+  # For now, we deploy with :latest tag which auto-updates
   update-manifests:
     name: Update Kubernetes Manifests
     runs-on: ubuntu-latest
     needs: [docker-build, security-scan]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: false  # Disabled - enable by setting repo permissions
     
     steps:
     - name: Checkout code
@@ -396,7 +399,7 @@ jobs:
   deploy-to-eks:
     name: Deploy to EKS
     runs-on: ubuntu-latest
-    needs: [sign-container, update-manifests, kyverno-scan]
+    needs: [sign-container, kyverno-scan]  # Removed update-manifests dependency
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     
     steps:
