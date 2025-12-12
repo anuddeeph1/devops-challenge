@@ -1,0 +1,447 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'app/**'
+      - 'terraform/**'
+      - 'kubernetes/**'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [main]
+
+env:
+  APP_NAME: simpletimeservice
+  AWS_REGION: us-west-1
+  EKS_CLUSTER_NAME: test-cluster-cluster
+  DOCKER_IMAGE: anuddeeph1/simpletimeservice
+
+jobs:
+  # Job 1: Build and Test Application
+  build-and-test:
+    name: Build and Test Go Application
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+        cache: true
+        cache-dependency-path: app/go.sum
+
+    - name: Install dependencies
+      working-directory: ./app
+      run: go mod download
+
+    - name: Run tests
+      working-directory: ./app
+      run: go test -v -race -coverprofile=coverage.out ./...
+
+    - name: Generate coverage report
+      working-directory: ./app
+      run: go tool cover -html=coverage.out -o coverage.html
+
+    - name: Upload coverage report
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-report
+        path: app/coverage.html
+        retention-days: 7
+
+    - name: Run go vet
+      working-directory: ./app
+      run: go vet ./...
+
+    - name: Run staticcheck
+      uses: dominikh/staticcheck-action@v1
+      with:
+        version: "latest"
+        install-go: false
+        working-directory: app
+
+  # Job 2: Build and Push Docker Image
+  docker-build:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.DOCKER_IMAGE }}
+        tags: |
+          type=ref,event=branch
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+          type=raw,value=latest-${{ github.run_id }}-${{ github.run_number }}
+
+    - name: Build and push Docker image
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: ./app
+        file: ./app/Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        provenance: true
+        sbom: true
+
+    - name: Generate SBOM with Syft
+      uses: anchore/sbom-action@v0
+      with:
+        image: ${{ env.DOCKER_IMAGE }}:latest-${{ github.run_id }}-${{ github.run_number }}
+        format: cyclonedx-json
+        output-file: sbom-cyclonedx.json
+        upload-artifact: true
+        upload-release-assets: false
+
+    - name: Generate SBOM in SPDX format
+      run: |
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          anchore/syft:latest \
+          ${{ env.DOCKER_IMAGE }}:latest-${{ github.run_id }}-${{ github.run_number }} \
+          -o spdx-json=sbom-spdx.json
+
+    - name: Upload SBOM artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: sbom-reports
+        path: |
+          sbom-cyclonedx.json
+          sbom-spdx.json
+        retention-days: 90
+
+  # Job 3: Security Scanning
+  security-scan:
+    name: Security Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: docker-build
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Grype vulnerability scanner
+      uses: anchore/scan-action@v3
+      id: grype
+      with:
+        image: ${{ env.DOCKER_IMAGE }}:latest-${{ github.run_id }}-${{ github.run_number }}
+        fail-build: false
+        severity-cutoff: high
+        output-format: json
+
+    - name: Generate Grype SARIF report
+      run: |
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          anchore/grype:latest \
+          ${{ env.DOCKER_IMAGE }}:latest-${{ github.run_id }}-${{ github.run_number }} \
+          -o sarif=grype-report.sarif
+
+    - name: Generate Grype table report
+      run: |
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          anchore/grype:latest \
+          ${{ env.DOCKER_IMAGE }}:latest-${{ github.run_id }}-${{ github.run_number }} \
+          -o table > grype-report.txt
+
+    - name: Upload Grype SARIF to GitHub Security
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: grype-report.sarif
+        category: container-security
+
+    - name: Upload security scan results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: security-scan-reports
+        path: |
+          ${{ steps.grype.outputs.json }}
+          grype-report.sarif
+          grype-report.txt
+        retention-days: 90
+
+    - name: Generate VEX document
+      run: |
+        mkdir -p security-reports/vex
+        
+        # Create VEX document with vulnerability analysis
+        cat > security-reports/vex/vex-document.json <<EOF
+        {
+          "@context": "https://openvex.dev/ns",
+          "@id": "https://github.com/${{ github.repository }}/security/vex-${{ github.run_id }}",
+          "author": "GitHub Actions CI/CD",
+          "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+          "version": "1",
+          "statements": [
+            {
+              "vulnerability": "CVE-ASSESSMENT-${{ github.run_id }}",
+              "products": [
+                "${{ env.DOCKER_IMAGE }}:latest-${{ github.run_id }}-${{ github.run_number }}"
+              ],
+              "status": "under_investigation",
+              "justification": "Automated security scan completed. Manual review required for high/critical vulnerabilities."
+            }
+          ]
+        }
+        EOF
+
+    - name: Upload VEX document
+      uses: actions/upload-artifact@v4
+      with:
+        name: vex-document
+        path: security-reports/vex/
+        retention-days: 90
+
+  # Job 4: Sign Container with Cosign
+  sign-container:
+    name: Sign Container Image
+    runs-on: ubuntu-latest
+    needs: [docker-build, security-scan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    
+    steps:
+    - name: Install Cosign
+      uses: sigstore/cosign-installer@v3
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Sign container image with keyless signing
+      run: |
+        cosign sign --yes \
+          ${{ env.DOCKER_IMAGE }}:latest-${{ github.run_id }}-${{ github.run_number }}
+
+    - name: Verify signature
+      run: |
+        cosign verify \
+          --certificate-identity-regexp="https://github.com/${{ github.repository }}/*" \
+          --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+          ${{ env.DOCKER_IMAGE }}:latest-${{ github.run_id }}-${{ github.run_number }}
+
+  # Job 5: Update Kubernetes Manifests
+  update-manifests:
+    name: Update Kubernetes Manifests
+    runs-on: ubuntu-latest
+    needs: [docker-build, security-scan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Update image tag in Helm values
+      run: |
+        IMAGE_TAG="latest-${{ github.run_id }}-${{ github.run_number }}"
+        # Update Helm chart values.yaml
+        sed -i "s|tag: .*|tag: ${IMAGE_TAG}|g" kubernetes/helm-chart/values.yaml
+        # Also update standalone deployment if used
+        sed -i "s|image: .*/simpletimeservice:.*|image: ${{ env.DOCKER_IMAGE }}:${IMAGE_TAG}|g" kubernetes/deployment.yaml
+
+    - name: Commit and push changes
+      run: |
+        git config --global user.name "GitHub Actions"
+        git config --global user.email "actions@github.com"
+        git add kubernetes/helm-chart/values.yaml kubernetes/deployment.yaml
+        git diff --staged --quiet || git commit -m "chore: update image tag to latest-${{ github.run_id }}-${{ github.run_number }}"
+        git push
+
+  # Job 6: Kyverno Policy Scan
+  kyverno-scan:
+    name: Kyverno Policy Validation
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Kyverno CLI
+      run: |
+        wget -q https://github.com/kyverno/kyverno/releases/download/v1.12.0/kyverno-cli_v1.12.0_linux_x86_64.tar.gz
+        tar -xzf kyverno-cli_v1.12.0_linux_x86_64.tar.gz
+        chmod +x kyverno
+        sudo mv kyverno /usr/local/bin/
+        kyverno version
+
+    - name: Install Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: 'latest'
+
+    - name: Render Helm templates
+      run: |
+        helm template simpletimeservice ./kubernetes/helm-chart \
+          --namespace simpletimeservice \
+          --set image.tag=latest \
+          > /tmp/rendered-manifests.yaml
+
+    - name: Scan with Kyverno
+      run: |
+        echo "🛡️ Baseline Policies:"
+        kyverno apply kubernetes/kyverno-policies/baseline/ \
+          --resource /tmp/rendered-manifests.yaml || true
+        
+        echo ""
+        echo "🛡️ Restricted Policies:"
+        kyverno apply kubernetes/kyverno-policies/restricted/ \
+          --resource /tmp/rendered-manifests.yaml || true
+
+    - name: Generate policy report
+      if: always()
+      run: |
+        kyverno apply kubernetes/kyverno-policies/ \
+          --resource /tmp/rendered-manifests.yaml \
+          --policy-report \
+          > kyverno-report.txt 2>&1 || true
+        
+        cat kyverno-report.txt
+
+    - name: Upload Kyverno reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: kyverno-policy-reports
+        path: kyverno-report.txt
+        retention-days: 30
+
+  # Job 7: Terraform Validate
+  terraform-validate:
+    name: Terraform Validate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.6.0
+
+    - name: Terraform Format Check
+      working-directory: ./terraform
+      run: terraform fmt -check
+
+    - name: Terraform Init
+      working-directory: ./terraform
+      run: terraform init -backend=false
+
+    - name: Terraform Validate
+      working-directory: ./terraform
+      run: terraform validate
+
+  # Job 8: Deploy to EKS
+  deploy-to-eks:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: [sign-container, update-manifests, kyverno-scan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: main
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig \
+          --name ${{ env.EKS_CLUSTER_NAME }} \
+          --region ${{ env.AWS_REGION }}
+
+    - name: Deploy to Kubernetes via Helm
+      run: |
+        helm upgrade --install simpletimeservice ./kubernetes/helm-chart \
+          --namespace simpletimeservice \
+          --create-namespace \
+          --set image.repository=${{ env.DOCKER_IMAGE }} \
+          --set image.tag=latest-${{ github.run_id }}-${{ github.run_number }} \
+          --wait \
+          --timeout 5m
+
+    - name: Wait for rollout
+      run: |
+        kubectl rollout status deployment/simpletimeservice -n simpletimeservice --timeout=5m
+
+    - name: Verify deployment
+      run: |
+        kubectl get pods -n simpletimeservice
+        kubectl get svc -n simpletimeservice
+        kubectl get hpa -n simpletimeservice
+
+  # Job 9: Notify on Success/Failure
+  notify:
+    name: Send Notifications
+    runs-on: ubuntu-latest
+    needs: [deploy-to-eks]
+    if: always()
+    
+    steps:
+    - name: Deployment Status
+      run: |
+        if [ "${{ needs.deploy-to-eks.result }}" == "success" ]; then
+          echo "✅ Deployment successful!"
+        else
+          echo "❌ Deployment failed!"
+          exit 1
+        fi
+
+    # Add Slack/Email notifications here if needed
+    # - name: Slack Notification
+    #   uses: 8398a7/action-slack@v3
+    #   with:
+    #     status: ${{ job.status }}
+    #     text: 'Deployment to EKS: ${{ needs.deploy-to-eks.result }}'
+    #     webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+

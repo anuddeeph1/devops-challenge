@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: simpletimeservice
+  namespace: simpletimeservice
+  labels:
+    app: simpletimeservice
+spec:
+  type: NodePort
+  selector:
+    app: simpletimeservice
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http
+    nodePort: 30080
+    protocol: TCP
+  sessionAffinity: None
+

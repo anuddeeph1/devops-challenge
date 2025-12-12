@@ -1,0 +1,194 @@
+---
+# Source: simpletimeservice/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: simpletimeservice
+  labels:
+    helm.sh/chart: simpletimeservice-1.0.0
+    app.kubernetes.io/name: simpletimeservice
+    app.kubernetes.io/instance: simpletimeservice
+    app: simpletimeservice
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/managed-by: Helm
+---
+# Source: simpletimeservice/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: simpletimeservice
+  labels:
+    helm.sh/chart: simpletimeservice-1.0.0
+    app.kubernetes.io/name: simpletimeservice
+    app.kubernetes.io/instance: simpletimeservice
+    app: simpletimeservice
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: simpletimeservice
+    app.kubernetes.io/instance: simpletimeservice
+    app: simpletimeservice
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http
+    nodePort: 30080
+    protocol: TCP
+  sessionAffinity: None
+---
+# Source: simpletimeservice/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simpletimeservice
+  labels:
+    helm.sh/chart: simpletimeservice-1.0.0
+    app.kubernetes.io/name: simpletimeservice
+    app.kubernetes.io/instance: simpletimeservice
+    app: simpletimeservice
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: simpletimeservice
+      app.kubernetes.io/instance: simpletimeservice
+      app: simpletimeservice
+  template:
+    metadata:
+      annotations:
+      labels:
+        app.kubernetes.io/name: simpletimeservice
+        app.kubernetes.io/instance: simpletimeservice
+        app: simpletimeservice
+    spec:
+      serviceAccountName: simpletimeservice
+      securityContext:
+        fsGroup: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: simpletimeservice
+        image: "anuddeeph1/simpletimeservice:latest"
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 8080
+          protocol: TCP
+        env:
+        - name: PORT
+          value: "8080"
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65532
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 3
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 3
+        startupProbe:
+          failureThreshold: 12
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 0
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 3
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - simpletimeservice
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+---
+# Source: simpletimeservice/templates/hpa.yaml
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: simpletimeservice-hpa
+  labels:
+    helm.sh/chart: simpletimeservice-1.0.0
+    app.kubernetes.io/name: simpletimeservice
+    app.kubernetes.io/instance: simpletimeservice
+    app: simpletimeservice
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/managed-by: Helm
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: simpletimeservice
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 15
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+      - type: Pods
+        value: 4
+        periodSeconds: 15
+      selectPolicy: Max

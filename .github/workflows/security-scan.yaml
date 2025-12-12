@@ -1,0 +1,88 @@
+name: Security Scan
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+env:
+  APP_NAME: simpletimeservice
+  DOCKER_IMAGE: anuddeeph1/simpletimeservice
+
+jobs:
+  scan-latest-image:
+    name: Scan Latest Docker Image
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      security-events: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run Grype vulnerability scanner
+      uses: anchore/scan-action@v3
+      id: grype
+      with:
+        image: ${{ env.DOCKER_IMAGE }}:latest
+        fail-build: false
+        severity-cutoff: medium
+        output-format: sarif
+
+    - name: Upload Grype SARIF to GitHub Security
+      uses: github/codeql-action/upload-sarif@v3
+      if: always()
+      with:
+        sarif_file: ${{ steps.grype.outputs.sarif }}
+        category: scheduled-container-security
+
+    - name: Generate detailed report
+      run: |
+        mkdir -p security-reports
+        
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          anchore/grype:latest \
+          ${{ env.DOCKER_IMAGE }}:latest \
+          -o json > security-reports/grype-report.json
+        
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          anchore/grype:latest \
+          ${{ env.DOCKER_IMAGE }}:latest \
+          -o table > security-reports/grype-report.txt
+
+    - name: Upload security reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: scheduled-security-scan
+        path: security-reports/
+        retention-days: 30
+
+  scan-dependencies:
+    name: Scan Go Dependencies
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.21'
+
+    - name: Run govulncheck
+      working-directory: ./app
+      run: |
+        go install golang.org/x/vuln/cmd/govulncheck@latest
+        govulncheck ./...
+
+    - name: Run nancy (Sonatype OSS Index)
+      working-directory: ./app
+      run: |
+        go list -json -deps ./... | docker run --rm -i sonatypecommunity/nancy:latest sleuth
+

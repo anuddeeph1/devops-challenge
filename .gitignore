@@ -1,0 +1,98 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars.backup
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Go
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+simpletimeservice
+app/simpletimeservice
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+coverage.out
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Security Reports
+security-reports/
+*.sarif
+sbom-*.json
+grype-report.*
+vex-document.json
+
+# Kubernetes
+kubeconfig
+*.kubeconfig
+
+# AWS
+*.pem
+*.key
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Binaries and executables
+bin/
+kyverno
+kyverno-cli_*
+*.tar.gz
+*.zip
+
+# Backup files
+*.bak
+backup/
+
+# Environment files (if you create them)
+.env
+.env.local
+
+# Node modules (if you add any JS tooling)
+node_modules/
+
+# Python (if you add any Python scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+ENV/
+
+# Docker
+docker-compose.override.yml
+.dockerignore.swp
+

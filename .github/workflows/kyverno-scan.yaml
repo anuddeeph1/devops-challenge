@@ -1,0 +1,125 @@
+name: Kyverno Policy Scan
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'kubernetes/**'
+      - '.github/workflows/kyverno-scan.yaml'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  KYVERNO_VERSION: v1.12.0
+
+jobs:
+  kyverno-scan:
+    name: Scan Kubernetes Manifests with Kyverno CLI
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Kyverno CLI
+      run: |
+        wget https://github.com/kyverno/kyverno/releases/download/${{ env.KYVERNO_VERSION }}/kyverno-cli_${{ env.KYVERNO_VERSION }}_linux_x86_64.tar.gz
+        tar -xzf kyverno-cli_${{ env.KYVERNO_VERSION }}_linux_x86_64.tar.gz
+        chmod +x kyverno
+        sudo mv kyverno /usr/local/bin/
+        kyverno version
+
+    - name: Render Helm templates
+      run: |
+        # Install Helm
+        curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+        
+        # Render Helm chart to YAML
+        mkdir -p /tmp/manifests
+        helm template simpletimeservice ./kubernetes/helm-chart \
+          --namespace simpletimeservice \
+          --set image.tag=latest \
+          > /tmp/manifests/simpletimeservice.yaml
+
+    - name: Scan Helm templates with Kyverno (Baseline)
+      continue-on-error: true
+      run: |
+        echo "🛡️ Scanning with Baseline Pod Security Standards..."
+        kyverno apply kubernetes/kyverno-policies/baseline/ \
+          --resource /tmp/manifests/simpletimeservice.yaml \
+          --policy-report \
+          > kyverno-baseline-report.txt 2>&1
+        
+        cat kyverno-baseline-report.txt
+
+    - name: Scan Helm templates with Kyverno (Restricted)
+      continue-on-error: true
+      run: |
+        echo "🛡️ Scanning with Restricted Pod Security Standards..."
+        kyverno apply kubernetes/kyverno-policies/restricted/ \
+          --resource /tmp/manifests/simpletimeservice.yaml \
+          --policy-report \
+          > kyverno-restricted-report.txt 2>&1
+        
+        cat kyverno-restricted-report.txt
+
+    - name: Scan standalone manifests
+      continue-on-error: true
+      run: |
+        echo "🛡️ Scanning standalone Kubernetes manifests..."
+        kyverno apply kubernetes/kyverno-policies/ \
+          --resource kubernetes/deployment.yaml \
+          --policy-report \
+          > kyverno-standalone-report.txt 2>&1
+        
+        cat kyverno-standalone-report.txt
+
+    - name: Generate summary report
+      if: always()
+      run: |
+        echo "# Kyverno Policy Scan Report" > kyverno-summary.md
+        echo "" >> kyverno-summary.md
+        echo "**Date**: $(date)" >> kyverno-summary.md
+        echo "**Kyverno Version**: ${{ env.KYVERNO_VERSION }}" >> kyverno-summary.md
+        echo "" >> kyverno-summary.md
+        echo "## Baseline Policies" >> kyverno-summary.md
+        echo "\`\`\`" >> kyverno-summary.md
+        cat kyverno-baseline-report.txt >> kyverno-summary.md 2>/dev/null || echo "No baseline violations" >> kyverno-summary.md
+        echo "\`\`\`" >> kyverno-summary.md
+        echo "" >> kyverno-summary.md
+        echo "## Restricted Policies" >> kyverno-summary.md
+        echo "\`\`\`" >> kyverno-summary.md
+        cat kyverno-restricted-report.txt >> kyverno-summary.md 2>/dev/null || echo "No restricted violations" >> kyverno-summary.md
+        echo "\`\`\`" >> kyverno-summary.md
+        echo "" >> kyverno-summary.md
+        echo "## Standalone Manifests" >> kyverno-summary.md
+        echo "\`\`\`" >> kyverno-summary.md
+        cat kyverno-standalone-report.txt >> kyverno-summary.md 2>/dev/null || echo "No violations" >> kyverno-summary.md
+        echo "\`\`\`" >> kyverno-summary.md
+
+    - name: Upload scan reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: kyverno-scan-reports
+        path: |
+          kyverno-*.txt
+          kyverno-summary.md
+        retention-days: 30
+
+    - name: Comment on PR
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          const summary = fs.readFileSync('kyverno-summary.md', 'utf8');
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: summary
+          });
+

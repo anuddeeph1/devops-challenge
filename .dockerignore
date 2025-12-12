@@ -1,0 +1,41 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+*.md
+docs/
+
+# CI/CD
+.github/
+
+# Terraform
+terraform/
+
+# Kubernetes
+kubernetes/
+
+# Scripts
+scripts/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+*_test.go
+coverage.out
+coverage.html
+
+# Temporary files
+*.tmp
+tmp/
+temp/
+
