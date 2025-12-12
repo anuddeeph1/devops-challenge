@@ -4,7 +4,13 @@ on:
   schedule:
     # Run daily at 2 AM UTC
     - cron: '0 2 * * *'
-  workflow_dispatch:
+  workflow_dispatch:  # Enable manual triggering from GitHub UI
+    inputs:
+      image_tag:
+        description: 'Image tag to scan (default: latest)'
+        required: false
+        default: 'latest'
+        type: string
 
 env:
   APP_NAME: simpletimeservice
